@@ -448,24 +448,7 @@ void NameServerImpl::AddBlock(::google::protobuf::RpcController* controller,
         done->Run();
         return;
     }
-
-    if (file_info.blocks_size() > 0) {
-        std::map<int64_t, std::set<int32_t> > block_cs;
-        block_mapping_manager_->RemoveBlocksForFile(file_info, &block_cs);
-        for (std::map<int64_t, std::set<int32_t> >::iterator it = block_cs.begin();
-                it != block_cs.end(); ++it) {
-            const std::set<int32_t>& cs = it->second;
-            for (std::set<int32_t>::iterator cs_it = cs.begin(); cs_it != cs.end(); ++cs_it) {
-                chunkserver_manager_->RemoveBlock(*cs_it, it->first);
-            }
-        }
-        file_info.clear_blocks();
-    }
-    /// replica num
     int replica_num = file_info.replicas();
-    /// check lease for write
-    std::vector<std::pair<int32_t, std::string> > chains;
-    common::timer::TimeChecker add_block_timer;
     if (chunkserver_manager_->GetChunkServerChains(replica_num, &chains, request->client_address())) {
         add_block_timer.Check(50 * 1000, "GetChunkServerChains");
         NameServerLog log;
@@ -478,36 +461,55 @@ void NameServerImpl::AddBlock(::google::protobuf::RpcController* controller,
         for (int i = 0; i < replica_num; i++) {
             file_info.add_cs_addrs(chunkserver_manager_->GetChunkServerAddr(chains[i].first));
         }
-        if (!namespace_->UpdateFileInfo(file_info, &log)) {
-            LOG(WARNING, "Update file info fail: %s", path.c_str());
-            response->set_status(kUpdateError);
-        }
-        LocatedBlock* block = response->mutable_block();
-        std::vector<int32_t> replicas;
-        for (int i = 0; i < replica_num; i++) {
-            ChunkServerInfo* info = block->add_chains();
-            int32_t cs_id = chains[i].first;
-            info->set_address(chains[i].second);
-            LOG(INFO, "Add C%d %s to #%ld response",
-                cs_id, chains[i].second.c_str(), new_block_id);
-            replicas.push_back(cs_id);
-            // update cs -> block
-            add_block_timer.Reset();
-            chunkserver_manager_->AddBlock(cs_id, new_block_id);
-            add_block_timer.Check(50 * 1000, "AddBlock");
-        }
-        block_mapping_manager_->AddNewBlock(new_block_id, replica_num, -1, 0, &replicas);
-        add_block_timer.Check(50 * 1000, "AddNewBlock");
-        block->set_block_id(new_block_id);
-        response->set_status(kOK);
-        LogRemote(log, std::bind(&NameServerImpl::SyncLogCallback, this,
-                                   controller, request, response, done,
-                                   (std::vector<FileInfo>*)NULL, std::placeholders::_1));
+        log.append(file_info.str());
     } else {
         LOG(WARNING, "AddBlock for %s failed.", path.c_str());
         response->set_status(kGetChunkServerError);
         done->Run();
     }
+    LogRemote(&NameServerImpl::AddBlockCallback, ...);
+}
+
+void NameServerImpl::AddBlockCallback(::google::protobuf::RpcController* controller,
+                         const AddBlockRequest* request,
+                         AddBlockResponse* response,
+                         ::google::protobuf::Closure* done,
+                         NameServerLog* log) {
+    if (success) {
+        ....
+    } else {
+        done->Run();
+    }
+
+    FileInfo file_info;
+    if (!namespace_->GetFileInfo(path, &file_info)) {
+        LOG(INFO, "AddBlock file not found: %s", path.c_str());
+        response->set_status(kNsNotFound);
+        done->Run();
+        return;
+    }
+    if (file_info.blocks_size() > 0) {
+        std::map<int64_t, std::set<int32_t> > block_cs;
+        block_mapping_manager_->RemoveBlocksForFile(file_info, &block_cs);
+        for (std::map<int64_t, std::set<int32_t> >::iterator it = block_cs.begin();
+                it != block_cs.end(); ++it) {
+            const std::set<int32_t>& cs = it->second;
+            for (std::set<int32_t>::iterator cs_it = cs.begin(); cs_it != cs.end(); ++cs_it) {
+                chunkserver_manager_->RemoveBlock(*cs_it, it->first);
+            }
+        }
+        file_info.clear_blocks();
+    }
+    file_info = ParseFrom(log);
+    for (rep in file_info) {
+        Block* block(...)
+        chunkserver_manager_->AddBlock(cs_id, block_id);
+        block_mapping_manager_->AddBlock(block);
+        file_info.replica_clear();
+    }
+    namespace_->UpdateBlockIdUpperBound(log);
+    namespace_->UpdateFileInfo(file_info);
+    done->Run();
 }
 
 void NameServerImpl::SyncBlock(::google::protobuf::RpcController* controller,
