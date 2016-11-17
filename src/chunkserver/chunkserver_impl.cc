@@ -214,10 +214,10 @@ void ChunkServerImpl::SendHeartbeat() {
     request.set_namespace_version(block_manager_->NameSpaceVersion());
     request.set_chunkserver_addr(data_server_addr_);
     request.set_block_num(g_blocks.Get());
-    request.set_data_size(g_data_size.Get());
-    request.set_buffers(g_block_buffers.Get());
-    request.set_pending_writes(g_pending_writes.Get());
-    request.set_pending_recover(g_recover_count.Get());
+    request.set_data_size(block_manager_->getXXX());
+    request.set_buffers(block_manager_->getXXX());
+    request.set_pending_writes(block_manager_->getXXX());
+    request.set_pending_recover(block_manager_->getXXX());
     request.set_w_qps(counters.write_ops);
     request.set_w_speed(counters.write_bytes);
     request.set_r_qps(counters.read_ops);

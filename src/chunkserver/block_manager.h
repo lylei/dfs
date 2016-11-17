@@ -26,6 +26,23 @@ class BlockMeta;
 class Block;
 class FileCache;
 
+class DiskManager {
+public:
+    int64_t DiskQuota()  const;
+    bool LoadStorage();
+    Block* CreateBlock(int64_t block_id, int64_t* sync_time, StatusCode* status);
+    Block* FindBlock(int64_t block_id);
+    bool CloseBlock(Block* block);
+    bool RemoveBlock(int64_t block_id);
+    bool RemoveAllBlocks();
+private:
+    BlockMap  block_map_;
+    ThreadPool* thread_pool_;
+    std::vector<std::string> store_path_;
+    typedef std::map<int64_t, Block*> BlockMap;
+    int64_t disk_quota_;
+};
+
 class BlockManager {
 public:
     BlockManager(const std::string& store_path);
@@ -42,22 +59,22 @@ public:
     bool RemoveBlock(int64_t block_id);
     bool RemoveAllBlocks();
 private:
-    std::string BlockId2Str(int64_t block_id);
+    void PickDisk();
     bool RemoveBlockMeta(int64_t block_id);
     bool RemoveAllBlocksAsync();
     void CheckStorePath(const std::string& store_path);
     const std::string& GetStorePath(int64_t block_id);
     bool SyncBlockMeta(const BlockMeta& meta, int64_t* sync_time);
 private:
+    std::vector<DiskManager*> disks_;
     ThreadPool* thread_pool_;
-    std::vector<std::string> store_path_list_;
-    typedef std::map<int64_t, Block*> BlockMap;
-    BlockMap  block_map_;
     leveldb::DB* metadb_;
     FileCache* file_cache_;
     Mutex   mu_;
     int64_t namespace_version_;
     int64_t disk_quota_;
+
+    Counter ...;
 };
 
 } // bfs
