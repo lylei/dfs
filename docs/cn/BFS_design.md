@@ -63,6 +63,64 @@ BlockReport是一个重要的流程，Chunkserver会定期将自己的Block信�
 	3. 如果有需要该Chunkserver做副本恢复的Block，会把副本恢复的信息告知该Chunkserver。
 	4. 如果当前Block写异常，需要关闭，也会通过BlockReport的返回rpc告知Chunkserver
 #### 副本恢复
-BFS只会对已经关闭的文件进行副本恢复，正在写的文件异常时需要先将文件关闭才能进行副本恢复。目前副本恢复有两个触发入口，Chunkserver宕机和BlockReport。
+BFS只会对已经关闭的文件进行副本恢复，正在写的文件异常时需要先将文件关闭才能进行副本恢复。目前副本恢复有两个触发入口，Chunkserver宕机和BlockReport。
+
+### Chunkserver
+Chunkserver主要相应用户实际的读写请求。
+#### BlockManager
+维护Chunkserver上所有DataBlock的列表。负责DataBlock创建，删除，查找的管理。在新的DataBlock被创建是，BlockManager会收集各磁盘的负载情况，选择负载最低的磁盘负责该Block的读写。
+#### DataBlock
+* 写
+
+DataBlock中维护一个滑动窗口。写操作将`data`和对应的`sequence`提交到滑动窗口，窗口根据`sequence`顺序地将`data`中的数据切分成小数据包，顺序放入任务队列。后台线程将任务队列里的数据包依次写到磁盘上。
+
+* 读
+
+读操作会先从文件中读取数据。如果读请求的offset超过了文件的大小，会试图从任务队列中读取数据，以此保证刚写入尚未落盘的数据也可以被读到。
+
+* 删除
+
+DataBlock维护一个引用计数。删除操作会将`delete`标志置位。读写操作检查到标志置位会退出并释放引用计数。引用计数归零时调用析构函数。
+
+#### Disk
+Disk管理磁盘上文件的元信息，包括文件大小，权限，版本等。除此之外Disk还负责负载的统计，如文件数量，内存占用量，打开文件数，文件访问频度等。
+
+### SDK
+
+SDK是用户对BFS发起读写请求的入口。
+#### BFS文件Create流程
+1. sdk调用`NameServer::CreateFile`, 向NameServer请求创建文件
+2. NameServer检查合法性, 分配entryid, 写入Namespace
+
+#### BFS文件Write流程
+1. sdk调用`NameServer::AddBlock`,向NameServer申请文件block, NameServer根据集群chunkserver负载, 为新block选择几个chunkserver
+2. sdk调用`ChunkServer::WriteBlock`, 向每个chunkserver(扇出写)或第一个chunkserver(链式写)发送写请求
+
+#### `ChunkServer::WriteBlock`流程
+1. 如果是链式写, 当前不是复制链上最后一个cs, 异步调用下一个cs的`ChunkServer::WriteBlock`, 并通过回调触发下一步
+2. 如果是当前块的第一个写操作, 调用BlockManager::CreateBlock, 创建一个新的Block, 并确定放在哪块Disk上
+3. 将写buffer数据复制一份, 放入滑动窗口
+4. 由滑动窗口的回调触发, 将buffer数据放入对应Disk的写队列
+5. Disk类的后台写线程, 负责将写队列的buffer数据, 按顺序写入磁盘文件
+6. 如果是当前块的最后一个请求, 通过`ChunkServer::BlockReceived`, 通知NameServer当前block副本完成
+
+#### BFS文件Sync流程
+1. 文件创建后的第一次Sync, sdk等待所有后台的WriteBlock操作完成后, 调用`NameServer::SyncBlock` 向Nameserver报告文件大小
+2. 从第二次Sync开始, sdk只等待所有后台的WriteBlock完成 不向NameServer通知
+
+#### BFS文件Close流程
+1. 文件的最后一个`ChunkServer::WriteBlock`请求会附带标记, 通知Chunkserver关闭Block
+2. 执行文件Sync逻辑保证说有数据都写到chunkserver
+3. SDK调用`NameServer::FinishBlock`, 通知NameServer文件关闭, 告知文件实际大小
+
+#### BFS文件Read流程
+1. sdk调用`GetFileLocation`,获得文件所在chunkserver
+2. sdk调用`ReadBlock`, 从chunkserver上读取文件数据
+
+#### BFS文件Delete流程
+1. sdk调用`NameServer::Unlink`, 请求NameServer删除文件
+2. NameServer检查合法性, 从NameSpace里删除对应entry
+3. 在Chunkserver做"BlockReport"时, NameServer在response里告知对应的Chunkserver做block的物理删除
+
 
 
